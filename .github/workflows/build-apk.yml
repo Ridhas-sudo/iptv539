@@ -5,20 +5,62 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Unzip source
         run: |
-          unzip -q "iptvplayer539.zip" -d .
           ls -la
+          for z in *.zip; do echo "Unzip $z"; unzip -q "$z" -d .; break; done
+          ls -la
+
+      - name: Fix viewModel reference
+        run: |
+          FILE="app/src/main/java/com/example/ui/IptvAppScreen.kt"
+          echo "--- autour ligne 2214 ---"
+          sed -n '2200,2230p' "$FILE" || true
+          echo "--- imports ---"
+          grep "^import" "$FILE" | tail -20 || true
+          # 1. ajoute l'import qui manque si pas la
+          if ! grep -q "androidx.lifecycle.viewmodel.compose.viewModel" "$FILE"; then
+            echo "Ajout import viewModel"
+            # ajoute apres les autres imports
+            sed -i '/^import /a import androidx.lifecycle.viewmodel.compose.viewModel' "$FILE"
+          fi
+          # 2. si viewModel utilise comme variable sans etre defini, on injecte la declaration juste avant
+          # on remplace la premiere occurrence de "viewModel." par "(viewModel(): IptvViewModel)." ne marche pas, on injecte une val
+          python3 << 'PY'
+          import pathlib
+          p = pathlib.Path("app/src/main/java/com/example/ui/IptvAppScreen.kt")
+          txt = p.read_text(encoding="utf-8", errors="ignore")
+          lines = txt.splitlines()
+          # cherche ligne 2214 (index 2213)
+          idx = 2213
+          if idx < len(lines):
+              line = lines[idx]
+              print(f"L2214: {line}")
+              # si la ligne contient viewModel et pas "val viewModel" deja
+              if "viewModel" in line and "val viewModel" not in txt[ max(0, p.read_text().find(line)-500): p.read_text().find(line)+100 ]:
+                  # on insere la declaration viewModel au dessus
+                  indent = line[:len(line)-len(line.lstrip())]
+                  lines.insert(idx, f"{indent}val viewModel: com.example.ui.IptvViewModel = viewModel()")
+                  print("Injection val viewModel ajoutee")
+          p.write_text("\n".join(lines), encoding="utf-8")
+          PY
+          echo "--- apres fix ligne 2214 ---"
+          sed -n '2210,2225p' "$FILE" || true
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: gradle
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+
       - name: Build Debug APK
         run: gradle assembleDebug
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
